@@ -1,6 +1,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 // Feature maps dimensionality descriptions and assumptions:
 //             : Height          : Width           : Channels : Number                :
@@ -27,7 +28,7 @@ const unsigned int BLOCK_SIZE = 256;
 // HOST FUNCTION
 // Takes matrix A [double *matA] and transforms it
 // into column representation [double *matAc]
-void im2colOnHost(double *matA, double *matAc, int radiusF, int countF, int L, int M, int K, int C)
+void im2colOnHost(double *matA, double *matAc, int radiusF, int countLR, int L, int M, int K, int C)
 {
     // For each spatial position in output...
     for (int m = 0; m < M; m++) {
@@ -42,7 +43,7 @@ void im2colOnHost(double *matA, double *matAc, int radiusF, int countF, int L, i
             for (int q = 0, oq = -1 * radiusF; oq <= radiusF; q++, oq++) {
                 for (int p = 0, op = -1 * radiusF; op <= radiusF; p++, op++) {
                     for (int r = 0; r < C; r++) {
-                        matAc[(r + C * (p + K * q)) + countF * (l + L * m)] = matA[r + C * ((h + op) + H * (w + oq))]; 
+                        matAc[(l + L * m) + countLR * (r + C * (p + K * q))] = matA[r + C * ((h + op) + H * (w + oq))]; 
                         // LOG("matAc[%3d x %3d] <- matA[%3d x %3d x %3d]\n", (r + C * (p + K* q)), (l + L * m), (h + op), (w + oq), r);
                     }
                 }
@@ -56,12 +57,12 @@ void im2colOnHost(double *matA, double *matAc, int radiusF, int countF, int L, i
 // Takes matrix A [double *matA] and transforms it
 // into column representation [double *matAc] on GPU
 __global__ 
-void im2colOnDevice(double *matA, double *matAc, int radiusF, int countF, int L, int M, int K, int C)
+void im2colOnDevice(double *matAc, double *matA, int radiusF, int countLR, int L, int M, int K, int C)
 {
     int idx = blockDim.x * blockIdx.x + threadIdx.x;
-    int m = idx / L;
-    int l = idx % L;
-    // int r = ...;
+    int m = (idx / C) / L;
+    int l = (idx / C) % L;
+    int r = idx % C;
     
     // TODO: Consider using grid-stride loop if too big problem size.
     // https://devblogs.nvidia.com/cuda-pro-tip-write-flexible-kernels-grid-stride-loops/
@@ -74,8 +75,8 @@ void im2colOnDevice(double *matA, double *matAc, int radiusF, int countF, int L,
             // For each kernel weight...
             for (int q = 0, oq = -1 * radiusF; oq <= radiusF; q++, oq++) {
                 for (int p = 0, op = -1 * radiusF; op <= radiusF; p++, op++) {
-                    for (int r = 0; r < C; r++) {
-                        matAc[(r + C * (p + K * q)) + countF * (l + L * m)] = matA[r + C * ((h + op) + H * (w + oq))]; 
+                    if (r < C) {
+                        matAc[(l + L * m) + countLR * (r + C * (p + K * q))] = matA[r + C * ((h + op) + H * (w + oq))]; 
                     }
                 }
             }
@@ -83,9 +84,44 @@ void im2colOnDevice(double *matA, double *matAc, int radiusF, int countF, int L,
     }
 }
  
+// DEVICE KERNEL
+// Takes matrix A [double *matA] and transforms it
+// into column representation [double *matAc] on GPU
+__global__ 
+void col2imOnDevice(double *matA, double *matAc, int radiusF, int countLR, int L, int M, int K, int C)
+{
+    int idx = blockDim.x * blockIdx.x + threadIdx.x;
+    int m = (idx / C) / L;
+    int l = (idx / C) % L;
+    int r = idx % C;
+    
+    // TODO: Consider using grid-stride loop if too big problem size.
+    // https://devblogs.nvidia.com/cuda-pro-tip-write-flexible-kernels-grid-stride-loops/
+
+    // For each spatial position in output...
+    if (m < M) {
+        int w = m + radiusF;
+        if (l < L) {
+            int h = l + radiusF;
+            // For each kernel weight...
+            for (int q = 0, oq = -1 * radiusF; oq <= radiusF; q++, oq++) {
+                for (int p = 0, op = -1 * radiusF; op <= radiusF; p++, op++) {
+                    if (r < C) {
+                        matA[r + C * ((h + op) + H * (w + oq))] = matAc[(l + L * m) + countLR * (r + C * (p + K * q))]; 
+                    }
+                }
+            }
+        }
+    }
+}
+
 int main()
 {
     // CONSTS AND VARIABLES
+
+    // For kernel execution time tracking
+    clock_t start, end;
+    double elapsed;
 
     // Input/kernel/output counts and sizes
     const unsigned int countA = H*W*C;
@@ -104,7 +140,8 @@ int main()
     const unsigned int M = W - (K - 1);
     LOG("[i] OUTPUT PARAMS: %u height, %u width, %u channels\n", L, M, D);
     
-    const unsigned int countAc = countF*(L*M);
+    const unsigned int countLR = L * M;
+    const unsigned int countAc = countF * countLR;
     const size_t sizeAc = countAc*sizeof(double);
     LOG("[i] INPUT IN COL PARAMS: %u elems, %u bytes\n", countAc, sizeAc);
 
@@ -120,7 +157,7 @@ int main()
 
     // Calculate im2col result
     double *matAc = (double *)malloc(sizeAc);
-    im2colOnHost(matA, matAc, radiusF, countF, L, M, K, C);
+    im2colOnHost(matA, matAc, radiusF, countLR, L, M, K, C);
     LOG("  [!] FINISHED CALCULATING im2col RESULT ON CPU\n");
 
 
@@ -133,10 +170,12 @@ int main()
 
     cudaMemcpy(devA, matA, sizeA, cudaMemcpyHostToDevice); 
     
-    // Run computation on device and copy results
-    const unsigned int GRID_SIZE = (L * M /* * C */ + BLOCK_SIZE - 1) / BLOCK_SIZE;
-    im2colOnDevice<<<GRID_SIZE, BLOCK_SIZE>>>(devA, devAc, radiusF, countF, L, M, K, C);
-    LOG("  [!] FINISHED CALCULATING im2col ON DEVICE\n");
+    // Run im2col computation on device and copy results
+    const unsigned int GRID_SIZE = (L * M * C + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    start = clock();
+    im2colOnDevice<<<GRID_SIZE, BLOCK_SIZE>>>(devAc, devA, radiusF, countLR, L, M, K, C);
+    end = clock();
+    LOG("  [!] FINISHED CALCULATING im2col ON DEVICE in %.3fms\n", ((double)(end - start)) * 1000 / CLOCKS_PER_SEC);
     
     cudaMemcpy(retAc, devAc, sizeAc, cudaMemcpyDeviceToHost);
 
@@ -146,16 +185,44 @@ int main()
     for (int i = 0; i < countAc; i++) {
         if (retAc[i] != matAc[i]) {
             success = 0;
-            printf("\nTEST FAILED: im2col device kernel...\n");
+            printf("TEST FAILED: im2col device kernel...\n");
             break;
         }
     }
 
     if (success) {
-        printf("\nTEST PASSED: im2col device kernel!\n");
+        printf("TEST PASSED: im2col device kernel!\n");
     }
 #endif
+
+    // Allocate memory for return value
+    double *retA;
+    retA = (double *)malloc(sizeA);
+    cudaMemset(devA, 0, sizeA); 
     
+    // Run col2im computation on device and copy results
+    start = clock();
+    col2imOnDevice<<<GRID_SIZE, BLOCK_SIZE>>>(devA, devAc, radiusF, countLR, L, M, K, C);
+    end = clock();
+    LOG("  [!] FINISHED CALCULATING col2im ON DEVICE in %.3fms\n", ((double)(end - start)) * 1000 / CLOCKS_PER_SEC);
+    
+    cudaMemcpy(retA, devA, sizeA, cudaMemcpyDeviceToHost);
+
+#ifdef TESTON
+    // Compare results
+    success = 1;
+    for (int i = 0; i < countA; i++) {
+        if (retA[i] != matA[i]) {
+            success = 0;
+            printf("TEST FAILED: col2im device kernel...\n");
+            break;
+        }
+    }
+
+    if (success) {
+        printf("TEST PASSED: col2im device kernel!\n");
+    }
+#endif
 
     // CLEAN UP
     cudaFree(devA);
@@ -163,6 +230,7 @@ int main()
     
     free(matA);
     free(matAc);
+    free(retA);
     free(retAc);
     
     return EXIT_SUCCESS;
