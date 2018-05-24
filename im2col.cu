@@ -13,6 +13,7 @@
 
 // Turn on/off debug mode
 #define DEBUG
+#define TESTON
 
 #ifdef DEBUG
     #define LOG(...) printf(__VA_ARGS__); fflush(stdout);
@@ -20,13 +21,66 @@
     #define LOG(...) ;
 #endif
 
-const int H = 128, W = 64, C = 32, K = 3, D = 1; 
- 
-__global__ 
-void im2col(char *A, int *B) 
+const unsigned int H = 512, W = 256, C = 128, K = 3, D = 1; 
+const unsigned int BLOCK_SIZE = 256;
+
+// HOST FUNCTION
+// Takes matrix A [double *matA] and transforms it
+// into column representation [double *matAc]
+void im2colOnHost(double *matA, double *matAc, int radiusF, int countF, int L, int M, int K, int C)
 {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    A[idx] = B[idx];
+    // For each spatial position in output...
+    for (int m = 0; m < M; m++) {
+        int w = m + radiusF;
+        for (int l = 0; l < L; l++) {
+            int h = l + radiusF;
+
+            // Progress..
+            LOG("\r[i] Calculation on CPU %3d%%...", ((m * L + l) * 100 / (M * L)));
+
+            // For each kernel weight...
+            for (int q = 0, oq = -1 * radiusF; oq <= radiusF; q++, oq++) {
+                for (int p = 0, op = -1 * radiusF; op <= radiusF; p++, op++) {
+                    for (int r = 0; r < C; r++) {
+                        matAc[(r + C * (p + K * q)) + countF * (l + L * m)] = matA[r + C * ((h + op) + H * (w + oq))]; 
+                        // LOG("matAc[%3d x %3d] <- matA[%3d x %3d x %3d]\n", (r + C * (p + K* q)), (l + L * m), (h + op), (w + oq), r);
+                    }
+                }
+            }
+        }
+    }
+    LOG("\n");
+}
+ 
+// DEVICE KERNEL
+// Takes matrix A [double *matA] and transforms it
+// into column representation [double *matAc] on GPU
+__global__ 
+void im2colOnDevice(double *matA, double *matAc, int radiusF, int countF, int L, int M, int K, int C)
+{
+    int idx = blockDim.x * blockIdx.x + threadIdx.x;
+    int m = idx / L;
+    int l = idx % L;
+    // int r = ...;
+    
+    // TODO: Consider using grid-stride loop if too big problem size.
+    // https://devblogs.nvidia.com/cuda-pro-tip-write-flexible-kernels-grid-stride-loops/
+
+    // For each spatial position in output...
+    if (m < M) {
+        int w = m + radiusF;
+        if (l < L) {
+            int h = l + radiusF;
+            // For each kernel weight...
+            for (int q = 0, oq = -1 * radiusF; oq <= radiusF; q++, oq++) {
+                for (int p = 0, op = -1 * radiusF; op <= radiusF; p++, op++) {
+                    for (int r = 0; r < C; r++) {
+                        matAc[(r + C * (p + K * q)) + countF * (l + L * m)] = matA[r + C * ((h + op) + H * (w + oq))]; 
+                    }
+                }
+            }
+        }
+    }
 }
  
 int main()
@@ -34,25 +88,25 @@ int main()
     // CONSTS AND VARIABLES
 
     // Input/kernel/output counts and sizes
-    const int countA = H*W*C;
+    const unsigned int countA = H*W*C;
     const size_t sizeA = countA*sizeof(double);
-    LOG("[i] INPUT PARAMS: %d height, %d width, %d channels, %d elems, %d bytes\n", H, W, C, countA, sizeA);
+    LOG("[i] INPUT PARAMS: %u height, %u width, %u channels, %u elems, %u bytes\n", H, W, C, countA, sizeA);
 
-    const int radiusF = (K - 1) / 2;
-    const int countF = K*K*C;
-    const int countFs = D*K*K*C;
+    const unsigned int radiusF = (K - 1) / 2;
+    const unsigned int countF = K*K*C;
+    const unsigned int countFs = D*K*K*C;
     const size_t sizeF = countF*sizeof(double);
     const size_t sizeFs = countFs*sizeof(double);
-    LOG("[i] FILTER PARAMS: %d radius, %d elems, %d bytes\n", radiusF, countF, sizeF);
-    LOG("[i] FILTERS PARAMS: %d elems, %d bytes\n", countFs, sizeFs);
+    LOG("[i] FILTER PARAMS: %u radius, %u elems, %u bytes\n", radiusF, countF, sizeF);
+    LOG("[i] FILTERS PARAMS: %u elems, %u bytes\n", countFs, sizeFs);
     
-    const int L = H - (K - 1);
-    const int M = W - (K - 1);
-    LOG("[i] OUTPUT PARAMS: %d height, %d width, %d channels\n", L, M, D);
+    const unsigned int L = H - (K - 1);
+    const unsigned int M = W - (K - 1);
+    LOG("[i] OUTPUT PARAMS: %u height, %u width, %u channels\n", L, M, D);
     
-    const int countAc = countF*(L*M);
+    const unsigned int countAc = countF*(L*M);
     const size_t sizeAc = countAc*sizeof(double);
-    LOG("[i] INPUT IN COL PARAMS: %d elems, %d bytes\n", countAc, sizeAc);
+    LOG("[i] INPUT IN COL PARAMS: %u elems, %u bytes\n", countAc, sizeAc);
 
     
     // PREPARE DATA
@@ -66,45 +120,50 @@ int main()
 
     // Calculate im2col result
     double *matAc = (double *)malloc(sizeAc);
-    // For each spatial position in output...
-    for (int m = 0; m < M; m++) {
-        int w = m + radiusF;
-        for (int l = 0; l < L; l++) {
-            int h = l + radiusF;
-            // For each kernel weight...
-            for (int q = 0, oq = -1 * radiusF; oq <= radiusF; q++, oq++) {
-                for (int p = 0, op = -1 * radiusF; op <= radiusF; p++, op++) {
-                    for (int r = 0; r < C; r++) {
-                        matAc[(r + C * (p + K* q)) + countF * (l + L * m)] = matA[r + C * ((h + p) + H * (w + q))]; 
-                        // LOG("matAc[%3d x %3d] <- matA[%3d x %3d x %3d]\n", (r + C * (p + K* q)), (l + L * m), (h + p), (w + q), r);
-                    }
-                }
-            }
-        }
-    }
-    LOG("  [!] FINISHED CALCULATING im2col RESULT\n");
+    im2colOnHost(matA, matAc, radiusF, countF, L, M, K, C);
+    LOG("  [!] FINISHED CALCULATING im2col RESULT ON CPU\n");
 
 
     // Alloc memory and copy data to device
-    // int *devA, *devAc;
+    double *devA, *devAc, *retAc;
     
-    // cudaMalloc((void**)&devA, sizeA); 
-    // cudaMalloc((void**)&devAc, sizeAc); 
+    cudaMalloc((void**)&devA, sizeA); 
+    cudaMalloc((void**)&devAc, sizeAc); 
+    retAc = (double *)malloc(sizeAc);
 
-    // cudaMemcpy(devA, matA, sizeA, cudaMemcpyHostToDevice); 
+    cudaMemcpy(devA, matA, sizeA, cudaMemcpyHostToDevice); 
     
-    // dim3 dimBlock(blocksize, 1);
-    // dim3 dimGrid(1, 1);
-    // copy<<<dimGrid, dimBlock>>>(ad, bd);
-    // cudaMemcpy(a, ad, csize, cudaMemcpyDeviceToHost); 
-    // cudaFree(ad);
-    // cudaFree(bd);
+    // Run computation on device and copy results
+    const unsigned int GRID_SIZE = (L * M /* * C */ + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    im2colOnDevice<<<GRID_SIZE, BLOCK_SIZE>>>(devA, devAc, radiusF, countF, L, M, K, C);
+    LOG("  [!] FINISHED CALCULATING im2col ON DEVICE\n");
     
-    // printf("%s\n", a);
+    cudaMemcpy(retAc, devAc, sizeAc, cudaMemcpyDeviceToHost);
+
+#ifdef TESTON
+    // Compare results
+    int success = 1;
+    for (int i = 0; i < countAc; i++) {
+        if (retAc[i] != matAc[i]) {
+            success = 0;
+            printf("\nTEST FAILED: im2col device kernel...\n");
+            break;
+        }
+    }
+
+    if (success) {
+        printf("\nTEST PASSED: im2col device kernel!\n");
+    }
+#endif
+    
 
     // CLEAN UP
+    cudaFree(devA);
+    cudaFree(devAc);
+    
     free(matA);
     free(matAc);
+    free(retAc);
     
     return EXIT_SUCCESS;
 }
