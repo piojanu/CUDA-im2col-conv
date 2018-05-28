@@ -57,26 +57,29 @@ void im2colOnHost(double *matA, double *matAc, int radiusF, int countLR, int L, 
 // Takes matrix A [double *matA] and transforms it
 // into column representation [double *matAc] on GPU
 __global__ 
-void im2colOnDevice(double *matAc, double *matA, int radiusF, int countLR, int L, int M, int K, int C)
+void im2colOnDevice(unsigned int n, double *matAc, double *matA, int radiusF, int countLR, int L, int M, int K, int C)
 {
-    int idx = blockDim.x * blockIdx.x + threadIdx.x;
-    int m = (idx / C) / L;
-    int l = (idx / C) % L;
-    int r = idx % C;
-    
-    // TODO: Consider using grid-stride loop if too big problem size.
+    // Using grid-stride loop if too big problem size.
     // https://devblogs.nvidia.com/cuda-pro-tip-write-flexible-kernels-grid-stride-loops/
-
-    // For each spatial position in output...
-    if (m < M) {
-        int w = m + radiusF;
-        if (l < L) {
-            int h = l + radiusF;
-            // For each kernel weight...
-            for (int q = 0, oq = -1 * radiusF; oq <= radiusF; q++, oq++) {
-                for (int p = 0, op = -1 * radiusF; op <= radiusF; p++, op++) {
-                    if (r < C) {
-                        matAc[(l + L * m) + countLR * (r + C * (p + K * q))] = matA[r + C * ((h + op) + H * (w + oq))]; 
+    for (int idx = blockIdx.x * blockDim.x + threadIdx.x; 
+         idx < n; 
+         idx += blockDim.x * gridDim.x) 
+    {
+        int m = (idx / C) / L;
+        int l = (idx / C) % L;
+        int r = idx % C;
+        
+        // For each spatial position in output...
+        if (m < M) {
+            int w = m + radiusF;
+            if (l < L) {
+                int h = l + radiusF;
+                // For each kernel weight...
+                for (int q = 0, oq = -1 * radiusF; oq <= radiusF; q++, oq++) {
+                    for (int p = 0, op = -1 * radiusF; op <= radiusF; p++, op++) {
+                        if (r < C) {
+                            matAc[(l + L * m) + countLR * (r + C * (p + K * q))] = matA[r + C * ((h + op) + H * (w + oq))]; 
+                        }
                     }
                 }
             }
@@ -88,26 +91,29 @@ void im2colOnDevice(double *matAc, double *matA, int radiusF, int countLR, int L
 // Takes matrix A [double *matA] and transforms it
 // into column representation [double *matAc] on GPU
 __global__ 
-void col2imOnDevice(double *matA, double *matAc, int radiusF, int countLR, int L, int M, int K, int C)
+void col2imOnDevice(unsigned int n, double *matA, double *matAc, int radiusF, int countLR, int L, int M, int K, int C)
 {
-    int idx = blockDim.x * blockIdx.x + threadIdx.x;
-    int m = (idx / C) / L;
-    int l = (idx / C) % L;
-    int r = idx % C;
-    
-    // TODO: Consider using grid-stride loop if too big problem size.
+    // Using grid-stride loop if too big problem size.
     // https://devblogs.nvidia.com/cuda-pro-tip-write-flexible-kernels-grid-stride-loops/
-
-    // For each spatial position in output...
-    if (m < M) {
-        int w = m + radiusF;
-        if (l < L) {
-            int h = l + radiusF;
-            // For each kernel weight...
-            for (int q = 0, oq = -1 * radiusF; oq <= radiusF; q++, oq++) {
-                for (int p = 0, op = -1 * radiusF; op <= radiusF; p++, op++) {
-                    if (r < C) {
-                        matA[r + C * ((h + op) + H * (w + oq))] = matAc[(l + L * m) + countLR * (r + C * (p + K * q))]; 
+    for (int idx = blockIdx.x * blockDim.x + threadIdx.x; 
+         idx < n; 
+         idx += blockDim.x * gridDim.x) 
+    {
+        int m = (idx / C) / L;
+        int l = (idx / C) % L;
+        int r = idx % C;
+    
+        // For each spatial position in output...
+        if (m < M) {
+            int w = m + radiusF;
+            if (l < L) {
+                int h = l + radiusF;
+                // For each kernel weight...
+                for (int q = 0, oq = -1 * radiusF; oq <= radiusF; q++, oq++) {
+                    for (int p = 0, op = -1 * radiusF; op <= radiusF; p++, op++) {
+                        if (r < C) {
+                            matA[r + C * ((h + op) + H * (w + oq))] = matAc[(l + L * m) + countLR * (r + C * (p + K * q))]; 
+                        }
                     }
                 }
             }
@@ -121,7 +127,6 @@ int main()
 
     // For kernel execution time tracking
     clock_t start, end;
-    double elapsed;
 
     // Input/kernel/output counts and sizes
     const unsigned int countA = H*W*C;
@@ -171,9 +176,10 @@ int main()
     cudaMemcpy(devA, matA, sizeA, cudaMemcpyHostToDevice); 
     
     // Run im2col computation on device and copy results
-    const unsigned int GRID_SIZE = (L * M * C + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    const unsigned int KERNELS_NUM = L * M * C;
+    const unsigned int GRID_SIZE = (KERNELS_NUM + BLOCK_SIZE - 1) / BLOCK_SIZE;
     start = clock();
-    im2colOnDevice<<<GRID_SIZE, BLOCK_SIZE>>>(devAc, devA, radiusF, countLR, L, M, K, C);
+    im2colOnDevice<<<GRID_SIZE, BLOCK_SIZE>>>(KERNELS_NUM, devAc, devA, radiusF, countLR, L, M, K, C);
     end = clock();
     LOG("  [!] FINISHED CALCULATING im2col ON DEVICE in %.3fms\n", ((double)(end - start)) * 1000 / CLOCKS_PER_SEC);
     
@@ -202,7 +208,7 @@ int main()
     
     // Run col2im computation on device and copy results
     start = clock();
-    col2imOnDevice<<<GRID_SIZE, BLOCK_SIZE>>>(devA, devAc, radiusF, countLR, L, M, K, C);
+    col2imOnDevice<<<GRID_SIZE, BLOCK_SIZE>>>(KERNELS_NUM, devA, devAc, radiusF, countLR, L, M, K, C);
     end = clock();
     LOG("  [!] FINISHED CALCULATING col2im ON DEVICE in %.3fms\n", ((double)(end - start)) * 1000 / CLOCKS_PER_SEC);
     
