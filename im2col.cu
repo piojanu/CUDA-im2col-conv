@@ -14,7 +14,8 @@
 
 // Turn on/off debug mode
 #define DEBUG
-#define TESTON
+#define FUNCTEST
+#define PERFTEST
 
 #ifdef DEBUG
     #define LOG(...) printf(__VA_ARGS__); fflush(stdout);
@@ -22,7 +23,7 @@
     #define LOG(...) ;
 #endif
 
-const unsigned int H = 512, W = 256, C = 128, K = 3, D = 1; 
+const unsigned int H = 5, W = 5, C = 3, K = 3, D = 1; 
 const unsigned int BLOCK_SIZE = 256;
 
 // HOST FUNCTION
@@ -121,7 +122,7 @@ void col2imOnDevice(unsigned int n, double *matA, double *matAc, int radiusF, in
     }
 }
 
-int main()
+void program()
 {
     // CONSTS AND VARIABLES
 
@@ -160,10 +161,12 @@ int main()
     }
     LOG("  [!] FINISHED GENERATING INPUT\n");
 
+#ifdef FUNCTEST
     // Calculate im2col result
     double *matAc = (double *)malloc(sizeAc);
     im2colOnHost(matA, matAc, radiusF, countLR, L, M, K, C);
     LOG("  [!] FINISHED CALCULATING im2col RESULT ON CPU\n");
+#endif
 
 
     // Alloc memory and copy data to device
@@ -185,7 +188,7 @@ int main()
     
     cudaMemcpy(retAc, devAc, sizeAc, cudaMemcpyDeviceToHost);
 
-#ifdef TESTON
+#ifdef FUNCTEST
     // Compare results
     int success = 1;
     for (int i = 0; i < countAc; i++) {
@@ -214,7 +217,7 @@ int main()
     
     cudaMemcpy(retA, devA, sizeA, cudaMemcpyDeviceToHost);
 
-#ifdef TESTON
+#ifdef FUNCTEST
     // Compare results
     success = 1;
     for (int i = 0; i < countA; i++) {
@@ -235,9 +238,15 @@ int main()
     cudaFree(devAc);
     
     free(matA);
+#ifdef FUNCTEST
     free(matAc);
+#endif
     free(retA);
     free(retAc);
-    
+}
+
+int main()
+{
+    program();
     return EXIT_SUCCESS;
 }
