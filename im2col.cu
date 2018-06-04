@@ -24,7 +24,7 @@
     #define LOG(...) ;
 #endif
 
-const unsigned int H = 256, W = 128, C = 64, K = 3; 
+const unsigned int H = 256, W = 256, C = 80, K = 3; 
 
 // HOST FUNCTION
 // Takes matrix A [double *matA] and transforms it
@@ -242,46 +242,56 @@ int main()
 {
     // Enforce default grid size
     unsigned int gridSize = 0;
+
+    // Calculate max needed kernels/threads number
+    const unsigned int L = H - (K - 1);
+    const unsigned int M = W - (K - 1);
+    const unsigned int KERNELS_NUM = L * M * C;
     
     // First warm-up run
     program(256);
 
 #ifdef PERFTEST
-    // Set grid size
-    gridSize = 1;
-    
     // Open file for perf logs
     std::fstream fperflog("perflog.csv", std::ios::out);
     if (fperflog.good())
     {
         // Measure effect of different block sizes
-        for (unsigned int blockSize = 2; blockSize <= 2048; blockSize *= 2) {
+        const unsigned int MAX_BLOCK_SIZE = 2048;
+        for (unsigned int blockSize = 1; blockSize <= MAX_BLOCK_SIZE; blockSize *= 2) {
+            const unsigned int MAX_GRID_SIZE = (KERNELS_NUM + blockSize - 1) / blockSize;
+            LOG("  [!] For %d blocks, max grid size is %d\n", blockSize, MAX_GRID_SIZE);
+            for (gridSize = 1; gridSize <= 8192; gridSize *= 2) {
+                if (gridSize <= MAX_GRID_SIZE) {
 #endif
-
-            struct timeval t1, t2;
-            double elapsedTime, totalTime = 0;
-            const int totalRuns = 10;
-            
-            for (int i = 0; i < totalRuns; i++) {
-                // Start timer
-                gettimeofday(&t1, NULL);
+                    struct timeval t1, t2;
+                    double elapsedTime, totalTime = 0;
+                    const int totalRuns = 10;
                 
-                // WORK HARD!
-                program(blockSize, gridSize);
-                
-                // Stop timer
-                gettimeofday(&t2, NULL);
-                
-                // Compute the elapsed time in millisec
-                elapsedTime = (t2.tv_sec - t1.tv_sec) * 1000.0;      // sec to ms
-                elapsedTime += (t2.tv_usec - t1.tv_usec) / 1000.0;   // us to ms
-                
-                totalTime += elapsedTime;
-            }
-            LOG("  [!] Whole program took %.3fms averaged over %d runs\n", totalTime / totalRuns, totalRuns);
-            
+                    for (int i = 0; i < totalRuns; i++) {
+                        // Start timer
+                        gettimeofday(&t1, NULL);
+                    
+                        // WORK HARD!
+                        program(blockSize, gridSize);
+                    
+                        // Stop timer
+                        gettimeofday(&t2, NULL);
+                    
+                        // Compute the elapsed time in millisec
+                        elapsedTime = (t2.tv_sec - t1.tv_sec) * 1000.0;      // sec to ms
+                        elapsedTime += (t2.tv_usec - t1.tv_usec) / 1000.0;   // us to ms
+                    
+                        totalTime += elapsedTime;
+                    }
+                    LOG("  [!] Whole program took %.3fms averaged over %d runs\n", totalTime / totalRuns, totalRuns);
 #ifdef PERFTEST
-            fperflog << blockSize << "," << gridSize << "," << elapsedTime << std::endl;
+                    fperflog << blockSize << "," << gridSize << "," << elapsedTime << std::endl;
+                } else {
+                    // Meaningless data, there is more grids ten data cat utilize 
+                    fperflog << blockSize << "," << gridSize << "," << -1 << std::endl;
+                }
+            }
         }
         
         // Close file
