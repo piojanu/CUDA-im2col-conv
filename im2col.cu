@@ -1,7 +1,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
-#include <time.h>
+#include <sys/time.h>
 
 // Feature maps dimensionality descriptions and assumptions:
 //             : Height          : Width           : Channels : Number                :
@@ -126,9 +126,6 @@ void program()
 {
     // CONSTS AND VARIABLES
 
-    // For kernel execution time tracking
-    clock_t start, end;
-
     // Input/kernel/output counts and sizes
     const unsigned int countA = H*W*C;
     const size_t sizeA = countA*sizeof(double);
@@ -181,10 +178,8 @@ void program()
     // Run im2col computation on device and copy results
     const unsigned int KERNELS_NUM = L * M * C;
     const unsigned int GRID_SIZE = (KERNELS_NUM + BLOCK_SIZE - 1) / BLOCK_SIZE;
-    start = clock();
     im2colOnDevice<<<GRID_SIZE, BLOCK_SIZE>>>(KERNELS_NUM, devAc, devA, radiusF, countLR, L, M, K, C);
-    end = clock();
-    LOG("  [!] FINISHED CALCULATING im2col ON DEVICE in %.3fms\n", ((double)(end - start)) * 1000 / CLOCKS_PER_SEC);
+    LOG("  [!] FINISHED CALCULATING im2col ON DEVICE\n");
     
     cudaMemcpy(retAc, devAc, sizeAc, cudaMemcpyDeviceToHost);
 
@@ -210,10 +205,8 @@ void program()
     cudaMemset(devA, 0, sizeA); 
     
     // Run col2im computation on device and copy results
-    start = clock();
     col2imOnDevice<<<GRID_SIZE, BLOCK_SIZE>>>(KERNELS_NUM, devA, devAc, radiusF, countLR, L, M, K, C);
-    end = clock();
-    LOG("  [!] FINISHED CALCULATING col2im ON DEVICE in %.3fms\n", ((double)(end - start)) * 1000 / CLOCKS_PER_SEC);
+    LOG("  [!] FINISHED CALCULATING col2im ON DEVICE\n");
     
     cudaMemcpy(retA, devA, sizeA, cudaMemcpyDeviceToHost);
 
@@ -247,6 +240,27 @@ void program()
 
 int main()
 {
-    program();
+    struct timeval t1, t2;
+    double elapsedTime, totalTime = 0;
+    const int totalRuns = 10;
+
+    for (int i = 0; i < totalRuns; i++) {
+        // Start timer
+        gettimeofday(&t1, NULL);
+        
+        // WORK HARD!
+        program();
+        
+        // Stop timer
+        gettimeofday(&t2, NULL);
+        
+        // Compute the elapsed time in millisec
+        elapsedTime = (t2.tv_sec - t1.tv_sec) * 1000.0;      // sec to ms
+        elapsedTime += (t2.tv_usec - t1.tv_usec) / 1000.0;   // us to ms
+
+        totalTime += elapsedTime;
+    }
+    LOG("  [!] Whole program took %.3fms averaged over %d runs\n", totalTime / totalRuns, totalRuns);
+
     return EXIT_SUCCESS;
 }
