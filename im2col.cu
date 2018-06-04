@@ -1,20 +1,21 @@
+#include <fstream>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/time.h>
 
 // Feature maps dimensionality descriptions and assumptions:
-//             : Height          : Width           : Channels : Number                :
-// INPUT   / A | H               | W               | C        | --------------------- |
-// KERNELS / F | P = K           | Q = K           | R = C    | D = number of kernels |
-// OUTPUT  / B | L = H * (K - 1) | M = W * (K - 1) | N = D    | --------------------- |
+//             : Height          : Width           : Channels  : Number                    :
+// INPUT   / A | H               | W               | C         | ------------------------- |  
+// KERNELS / F | P = K           | Q = K           | R = C     | D = number of kernels = 1 |
+// OUTPUT  / B | L = H * (K - 1) | M = W * (K - 1) | N = D = 1 | ------------------------- |
 // [!] K must be odd number.
 // [!] Data layout for INPUT/OUTPUT: C x H x W.
 // [!] Data layout for KERNELS: D x R(=C) x P(=K) x Q(=K)
 
 // Turn on/off debug mode
-#define DEBUG
-#define FUNCTEST
+// #define DEBUG
+// #define FUNCTEST
 #define PERFTEST
 
 #ifdef DEBUG
@@ -23,8 +24,7 @@
     #define LOG(...) ;
 #endif
 
-const unsigned int H = 5, W = 5, C = 3, K = 3, D = 1; 
-const unsigned int BLOCK_SIZE = 256;
+const unsigned int H = 256, W = 128, C = 64, K = 3; 
 
 // HOST FUNCTION
 // Takes matrix A [double *matA] and transforms it
@@ -122,7 +122,7 @@ void col2imOnDevice(unsigned int n, double *matA, double *matAc, int radiusF, in
     }
 }
 
-void program()
+void program(unsigned int blockSize, unsigned int gridSize = 0)
 {
     // CONSTS AND VARIABLES
 
@@ -133,9 +133,6 @@ void program()
 
     const unsigned int radiusF = (K - 1) / 2;
     const unsigned int countF = K*K*C;
-    const unsigned int countFs = D*K*K*C;
-    const size_t sizeF = countF*sizeof(double);
-    const size_t sizeFs = countFs*sizeof(double);
     LOG("[i] FILTER PARAMS: %u radius, %u elems, %u bytes\n", radiusF, countF, sizeF);
     LOG("[i] FILTERS PARAMS: %u elems, %u bytes\n", countFs, sizeFs);
     
@@ -174,11 +171,14 @@ void program()
     retAc = (double *)malloc(sizeAc);
 
     cudaMemcpy(devA, matA, sizeA, cudaMemcpyHostToDevice); 
+
+    // Compute default grid size if it wasn't passed
+    const unsigned int KERNELS_NUM = L * M * C;
+    if (gridSize == 0)
+        gridSize = (KERNELS_NUM + blockSize - 1) / blockSize;
     
     // Run im2col computation on device and copy results
-    const unsigned int KERNELS_NUM = L * M * C;
-    const unsigned int GRID_SIZE = (KERNELS_NUM + BLOCK_SIZE - 1) / BLOCK_SIZE;
-    im2colOnDevice<<<GRID_SIZE, BLOCK_SIZE>>>(KERNELS_NUM, devAc, devA, radiusF, countLR, L, M, K, C);
+    im2colOnDevice<<<gridSize, blockSize>>>(KERNELS_NUM, devAc, devA, radiusF, countLR, L, M, K, C);
     LOG("  [!] FINISHED CALCULATING im2col ON DEVICE\n");
     
     cudaMemcpy(retAc, devAc, sizeAc, cudaMemcpyDeviceToHost);
@@ -205,7 +205,7 @@ void program()
     cudaMemset(devA, 0, sizeA); 
     
     // Run col2im computation on device and copy results
-    col2imOnDevice<<<GRID_SIZE, BLOCK_SIZE>>>(KERNELS_NUM, devA, devAc, radiusF, countLR, L, M, K, C);
+    col2imOnDevice<<<gridSize, blockSize>>>(KERNELS_NUM, devA, devAc, radiusF, countLR, L, M, K, C);
     LOG("  [!] FINISHED CALCULATING col2im ON DEVICE\n");
     
     cudaMemcpy(retA, devA, sizeA, cudaMemcpyDeviceToHost);
@@ -240,27 +240,54 @@ void program()
 
 int main()
 {
-    struct timeval t1, t2;
-    double elapsedTime, totalTime = 0;
-    const int totalRuns = 10;
+    // Enforce default grid size
+    unsigned int gridSize = 0;
+    
+    // First warm-up run
+    program(256);
 
-    for (int i = 0; i < totalRuns; i++) {
-        // Start timer
-        gettimeofday(&t1, NULL);
-        
-        // WORK HARD!
-        program();
-        
-        // Stop timer
-        gettimeofday(&t2, NULL);
-        
-        // Compute the elapsed time in millisec
-        elapsedTime = (t2.tv_sec - t1.tv_sec) * 1000.0;      // sec to ms
-        elapsedTime += (t2.tv_usec - t1.tv_usec) / 1000.0;   // us to ms
+#ifdef PERFTEST
+    // Set grid size
+    gridSize = 1;
+    
+    // Open file for perf logs
+    std::fstream fperflog("perflog.csv", std::ios::out);
+    if (fperflog.good())
+    {
+        // Measure effect of different block sizes
+        for (unsigned int blockSize = 2; blockSize <= 2048; blockSize *= 2) {
+#endif
 
-        totalTime += elapsedTime;
+            struct timeval t1, t2;
+            double elapsedTime, totalTime = 0;
+            const int totalRuns = 10;
+            
+            for (int i = 0; i < totalRuns; i++) {
+                // Start timer
+                gettimeofday(&t1, NULL);
+                
+                // WORK HARD!
+                program(blockSize, gridSize);
+                
+                // Stop timer
+                gettimeofday(&t2, NULL);
+                
+                // Compute the elapsed time in millisec
+                elapsedTime = (t2.tv_sec - t1.tv_sec) * 1000.0;      // sec to ms
+                elapsedTime += (t2.tv_usec - t1.tv_usec) / 1000.0;   // us to ms
+                
+                totalTime += elapsedTime;
+            }
+            LOG("  [!] Whole program took %.3fms averaged over %d runs\n", totalTime / totalRuns, totalRuns);
+            
+#ifdef PERFTEST
+            fperflog << blockSize << "," << gridSize << "," << elapsedTime << std::endl;
+        }
+        
+        // Close file
+        fperflog.close();
     }
-    LOG("  [!] Whole program took %.3fms averaged over %d runs\n", totalTime / totalRuns, totalRuns);
+#endif
 
     return EXIT_SUCCESS;
 }

@@ -73,3 +73,6 @@ CTestTestfile.cmake
 *.ptx
 *.cubin
 *.fatbin
+
+## Own
+*.csv
