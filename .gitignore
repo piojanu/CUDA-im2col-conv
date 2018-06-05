@@ -74,5 +74,8 @@ CTestTestfile.cmake
 *.cubin
 *.fatbin
 
+## Python
+.ipynb_checkpoints/
+
 ## Own
 *.csv
