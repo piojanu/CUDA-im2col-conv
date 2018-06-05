@@ -78,4 +78,4 @@ CTestTestfile.cmake
 .ipynb_checkpoints/
 
 ## Own
-*.csv
+/*.csv
