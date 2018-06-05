@@ -14,9 +14,9 @@
 // [!] Data layout for KERNELS: D x R(=C) x P(=K) x Q(=K)
 
 // Turn on/off debug mode
-#define DEBUG
-#define FUNCTEST
-// #define PERFTEST
+// #define DEBUG
+// #define FUNCTEST
+#define PERFTEST
 
 #ifdef DEBUG
     #define LOG(...) printf(__VA_ARGS__); fflush(stdout);
@@ -24,12 +24,12 @@
     #define LOG(...) ;
 #endif
 
-const unsigned int H = 6, W = 6, C = 8, K = 3; 
+const unsigned int H = 256, W = 256, C = 80, K = 3; 
 
 // HOST FUNCTION
-// Takes matrix A [double *matA] and transforms it
-// into column representation [double *matAc]
-void im2colOnHost(double *matA, double *matAc, int radiusF, int countLR, int L, int M, int K, int C)
+// Takes matrix A [float *matA] and transforms it
+// into column representation [float *matAc]
+void im2colOnHost(float *matA, float *matAc, int radiusF, int countLR, int L, int M, int K, int C)
 {
     // For each spatial position in output...
     for (int m = 0; m < M; m++) {
@@ -55,10 +55,10 @@ void im2colOnHost(double *matA, double *matAc, int radiusF, int countLR, int L, 
 }
  
 // DEVICE KERNEL
-// Takes matrix A [double *matA] and transforms it
-// into column representation [double *matAc] on GPU
+// Takes matrix A [float *matA] and transforms it
+// into column representation [float *matAc] on GPU
 __global__ 
-void im2colOnDevice(unsigned int n, double *matAc, double *matA, int radiusF, int countLR, int L, int M, int K, int C)
+void im2colOnDevice(unsigned int n, float *matAc, float *matA, int radiusF, int countLR, int L, int M, int K, int C)
 {
     // Using grid-stride loop if too big problem size.
     // https://devblogs.nvidia.com/cuda-pro-tip-write-flexible-kernels-grid-stride-loops/
@@ -89,10 +89,10 @@ void im2colOnDevice(unsigned int n, double *matAc, double *matA, int radiusF, in
 }
  
 // DEVICE KERNEL
-// Takes matrix A [double *matA] and transforms it
-// into column representation [double *matAc] on GPU
+// Takes matrix A [float *matA] and transforms it
+// into column representation [float *matAc] on GPU
 __global__ 
-void col2imOnDevice(unsigned int n, double *matA, double *matAc, int radiusF, int countLR, int L, int M, int K, int C)
+void col2imOnDevice(unsigned int n, float *matA, float *matAc, int radiusF, int countLR, int L, int M, int K, int C)
 {
     // Using grid-stride loop if too big problem size.
     // https://devblogs.nvidia.com/cuda-pro-tip-write-flexible-kernels-grid-stride-loops/
@@ -128,12 +128,12 @@ void program(unsigned int blockSize, unsigned int gridSize = 0)
 
     // Input/kernel/output counts and sizes
     const unsigned int countA = H*W*C;
-    const size_t sizeA = countA*sizeof(double);
+    const size_t sizeA = countA*sizeof(float);
     LOG("[i] INPUT PARAMS: %u height, %u width, %u channels, %u elems, %u bytes\n", H, W, C, countA, sizeA);
 
     const unsigned int radiusF = (K - 1) / 2;
     const unsigned int countF = K*K*C;
-    LOG("[i] FILTER PARAMS: %u radius, %u elems, %u bytes\n", radiusF, countF, countF*sizeof(double));
+    LOG("[i] FILTER PARAMS: %u radius, %u elems, %u bytes\n", radiusF, countF, countF*sizeof(float));
     
     const unsigned int L = H - (K - 1);
     const unsigned int M = W - (K - 1);
@@ -141,14 +141,14 @@ void program(unsigned int blockSize, unsigned int gridSize = 0)
     
     const unsigned int countLR = L * M;
     const unsigned int countAc = countF * countLR;
-    const size_t sizeAc = countAc*sizeof(double);
+    const size_t sizeAc = countAc*sizeof(float);
     LOG("[i] INPUT IN COL PARAMS: %u elems, %u bytes\n", countAc, sizeAc);
 
     
     // PREPARE DATA
 
     // Generate input data
-    double *matA = (double *)malloc(sizeA);
+    float *matA = (float *)malloc(sizeA);
     for (int i = 0; i < countA; i++) {
         matA[i] = i;
     }
@@ -156,18 +156,18 @@ void program(unsigned int blockSize, unsigned int gridSize = 0)
 
 #ifdef FUNCTEST
     // Calculate im2col result
-    double *matAc = (double *)malloc(sizeAc);
+    float *matAc = (float *)malloc(sizeAc);
     im2colOnHost(matA, matAc, radiusF, countLR, L, M, K, C);
     LOG("  [!] FINISHED CALCULATING im2col RESULT ON CPU\n");
 #endif
 
 
     // Alloc memory and copy data to device
-    double *devA, *devAc, *retAc;
+    float *devA, *devAc, *retAc;
     
     cudaMalloc((void**)&devA, sizeA); 
     cudaMalloc((void**)&devAc, sizeAc); 
-    retAc = (double *)malloc(sizeAc);
+    retAc = (float *)malloc(sizeAc);
 
     cudaMemcpy(devA, matA, sizeA, cudaMemcpyHostToDevice); 
 
@@ -199,8 +199,8 @@ void program(unsigned int blockSize, unsigned int gridSize = 0)
 #endif
 
     // Allocate memory for return value
-    double *retA;
-    retA = (double *)malloc(sizeA);
+    float *retA;
+    retA = (float *)malloc(sizeA);
     cudaMemset(devA, 0, sizeA); 
     
     // Run col2im computation on device and copy results
