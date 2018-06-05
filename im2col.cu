@@ -14,9 +14,9 @@
 // [!] Data layout for KERNELS: D x R(=C) x P(=K) x Q(=K)
 
 // Turn on/off debug mode
-// #define DEBUG
-// #define FUNCTEST
-#define PERFTEST
+#define DEBUG
+#define FUNCTEST
+// #define PERFTEST
 
 #ifdef DEBUG
     #define LOG(...) printf(__VA_ARGS__); fflush(stdout);
@@ -24,7 +24,7 @@
     #define LOG(...) ;
 #endif
 
-const unsigned int H = 256, W = 256, C = 80, K = 3; 
+const unsigned int H = 6, W = 6, C = 8, K = 3; 
 
 // HOST FUNCTION
 // Takes matrix A [double *matA] and transforms it
@@ -133,12 +133,11 @@ void program(unsigned int blockSize, unsigned int gridSize = 0)
 
     const unsigned int radiusF = (K - 1) / 2;
     const unsigned int countF = K*K*C;
-    LOG("[i] FILTER PARAMS: %u radius, %u elems, %u bytes\n", radiusF, countF, sizeF);
-    LOG("[i] FILTERS PARAMS: %u elems, %u bytes\n", countFs, sizeFs);
+    LOG("[i] FILTER PARAMS: %u radius, %u elems, %u bytes\n", radiusF, countF, countF*sizeof(double));
     
     const unsigned int L = H - (K - 1);
     const unsigned int M = W - (K - 1);
-    LOG("[i] OUTPUT PARAMS: %u height, %u width, %u channels\n", L, M, D);
+    LOG("[i] OUTPUT PARAMS: %u height, %u width, %u channels\n", L, M, 1);
     
     const unsigned int countLR = L * M;
     const unsigned int countAc = countF * countLR;
@@ -240,35 +239,44 @@ void program(unsigned int blockSize, unsigned int gridSize = 0)
 
 int main()
 {
-    // Enforce default grid size
+    // Enforce default block and grid sizes
+    unsigned int blockSize = 256;
     unsigned int gridSize = 0;
 
     // Calculate max needed kernels/threads number
     const unsigned int L = H - (K - 1);
     const unsigned int M = W - (K - 1);
     const unsigned int KERNELS_NUM = L * M * C;
+
+    // Prepare variables for time measurement
+    struct timeval t1, t2;
+    double elapsedTime, totalTime = 0;
+    int totalRuns = 1;
     
     // First warm-up run
+    LOG("--------- WARM-UP ---------\n");
     program(256);
+    LOG("--------- WARM-UP ---------\n\n");
 
 #ifdef PERFTEST
+    // Average over 10 runs
+    totalRuns = 10;
+    
     // Open file for perf logs
     std::fstream fperflog("perflog.csv", std::ios::out);
     if (fperflog.good())
     {
         // Measure effect of different block sizes
         const unsigned int MAX_BLOCK_SIZE = 2048;
-        for (unsigned int blockSize = 1; blockSize <= MAX_BLOCK_SIZE; blockSize *= 2) {
+        for (blockSize = 1; blockSize <= MAX_BLOCK_SIZE; blockSize *= 2) {
             const unsigned int MAX_GRID_SIZE = (KERNELS_NUM + blockSize - 1) / blockSize;
             LOG("  [!] For %d blocks, max grid size is %d\n", blockSize, MAX_GRID_SIZE);
             for (gridSize = 1; gridSize <= 8192; gridSize *= 2) {
                 if (gridSize <= MAX_GRID_SIZE) {
+                    totalTime = 0;
+                    for (int i = 0; i < totalRuns; i++)
 #endif
-                    struct timeval t1, t2;
-                    double elapsedTime, totalTime = 0;
-                    const int totalRuns = 10;
-                
-                    for (int i = 0; i < totalRuns; i++) {
+                    {
                         // Start timer
                         gettimeofday(&t1, NULL);
                     
